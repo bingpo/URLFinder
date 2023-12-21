@@ -1,10 +1,13 @@
 package util
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"github.com/pingc0y/URLFinder/cmd"
 	"github.com/pingc0y/URLFinder/config"
 	"github.com/pingc0y/URLFinder/mode"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -12,24 +15,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
-
-// 判断所给路径是否为文件夹
-func IsDir(path string) bool {
-	s, err := os.Stat(path)
-	if err != nil {
-		fmt.Println(err)
-		return false
-	}
-	return s.IsDir()
-}
 
 // MergeArray 合并数组
 func MergeArray(dest []mode.Link, src []mode.Link) (result []mode.Link) {
 	result = make([]mode.Link, len(dest)+len(src))
 	//将第一个数组传入result
 	copy(result, dest)
-	//将第二个数组接在尾部，也就是 len(dest):
+	//将第二个数组接在尾部,也就是 len(dest):
 	copy(result[len(dest):], src)
 	return
 }
@@ -74,7 +68,7 @@ func UrlDispose(arr []mode.Link, url, host string) ([]mode.Link, []mode.Link) {
 		if strings.Contains(v.Url, url) {
 			urls = append(urls, v)
 		} else {
-			if host != "" && strings.Contains(v.Url, host) {
+			if host != "" && regexp.MustCompile(host).MatchString(v.Url) {
 				urlts = append(urlts, v)
 			} else {
 				other = append(other, v)
@@ -92,7 +86,7 @@ func UrlDispose(arr []mode.Link, url, host string) ([]mode.Link, []mode.Link) {
 // 处理Headers配置
 func SetHeadersConfig(header *http.Header) *http.Header {
 	for k, v := range config.Conf.Headers {
-		header.Add(k, v)
+		header.Set(k, v)
 	}
 	return header
 }
@@ -100,6 +94,7 @@ func SetHeadersConfig(header *http.Header) *http.Header {
 // 设置proxy配置
 func SetProxyConfig(tr *http.Transport) *http.Transport {
 	if len(config.Conf.Proxy) > 0 {
+		tr.DisableKeepAlives = true
 		proxyUrl, parseErr := url.Parse(config.Conf.Proxy)
 		if parseErr != nil {
 			fmt.Println("代理地址错误: \n" + parseErr.Error())
@@ -110,9 +105,29 @@ func SetProxyConfig(tr *http.Transport) *http.Transport {
 	return tr
 }
 
+// 判断http协议
+func GetProtocol(domain string) string {
+	if strings.HasPrefix(domain, "http") {
+		return domain
+	}
+
+	response, err := http.Get("https://" + domain)
+	if err == nil {
+		return "https://" + domain
+	}
+	response, err = http.Get("http://" + domain)
+	if err == nil {
+		return "http://" + domain
+	}
+	defer response.Body.Close()
+	if response.TLS == nil {
+		return "http://" + domain
+	}
+	return ""
+}
+
 // 提取顶级域名
 func GetHost(u string) string {
-
 	re := regexp.MustCompile("([a-z0-9\\-]+\\.)*([a-z0-9\\-]+\\.[a-z0-9\\-]+)(:[0-9]+)?")
 	var host string
 	hosts := re.FindAllString(u, 1)
@@ -162,7 +177,7 @@ func RemoveRepeatElement(list []mode.Link) []mode.Link {
 			re := regexp.MustCompile("://([a-z0-9\\-]+\\.)*([a-z0-9\\-]+\\.[a-z0-9\\-]+)(:[0-9]+)?")
 			hosts := re.FindAllString(v.Url, 1)
 			if len(hosts) != 0 {
-				// 遍历数组元素，判断此元素是否已经存在map中
+				// 遍历数组元素,判断此元素是否已经存在map中
 				_, ok := temp[v.Url]
 				if !ok {
 					v.Url = strings.Replace(v.Url, "/./", "/", -1)
@@ -179,8 +194,8 @@ func RemoveRepeatElement(list []mode.Link) []mode.Link {
 
 // 打印Fuzz进度
 func PrintFuzz() {
-	fmt.Printf("\rFuzz %.0f%%", float64(config.Progress+1)/float64(config.FuzzNum+1)*100)
 	config.Mux.Lock()
+	fmt.Printf("\rFuzz %.0f%%", float64(config.Progress+1)/float64(config.FuzzNum+1)*100)
 	config.Progress++
 	config.Mux.Unlock()
 }
@@ -190,7 +205,7 @@ func domainNameFilter(url string) string {
 	re := regexp.MustCompile("://([a-z0-9\\-]+\\.)*([a-z0-9\\-]+\\.[a-z0-9\\-]+)(:[0-9]+)?")
 	hosts := re.FindAllString(url, 1)
 	if len(hosts) != 0 {
-		if !strings.Contains(hosts[0], cmd.D) {
+		if !regexp.MustCompile(cmd.D).MatchString(hosts[0]) {
 			url = ""
 		}
 	}
@@ -315,7 +330,7 @@ func Del404(urls []mode.Link) []mode.Link {
 		}
 	}
 	res := []mode.Link{}
-	//如果某个长度的数量大于全部的3分之2，那么就判定它是404页面
+	//如果某个长度的数量大于全部的3分之2,那么就判定它是404页面
 	for i, v := range is {
 		if v > len(urls)/2 {
 			for _, vv := range urls {
@@ -365,4 +380,45 @@ func GetUserAgent() string {
 		cmd.A = uas[rand.Intn(nuas)]
 	}
 	return cmd.A
+}
+
+func GetUpdate() {
+
+	url := fmt.Sprintf("https://api.github.com/repos/pingc0y/URLFinder/releases/latest")
+	client := &http.Client{
+		Timeout: time.Second * 2,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyFromEnvironment,
+		},
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		cmd.XUpdate = "更新检测失败"
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		cmd.XUpdate = "更新检测失败"
+		return
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	err = json.Unmarshal(body, &release)
+	if err != nil {
+		cmd.XUpdate = "更新检测失败"
+		return
+	}
+	if release.TagName == "" {
+		cmd.XUpdate = "更新检测失败"
+		return
+	}
+	if cmd.Update != release.TagName {
+		cmd.XUpdate = "有新版本可用: " + release.TagName
+	} else {
+		cmd.XUpdate = "已是最新版本"
+	}
+
 }

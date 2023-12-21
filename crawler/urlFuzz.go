@@ -1,7 +1,6 @@
-package fuzz
+package crawler
 
 import (
-	"crypto/tls"
 	"fmt"
 	"github.com/pingc0y/URLFinder/cmd"
 	"github.com/pingc0y/URLFinder/config"
@@ -10,12 +9,9 @@ import (
 	"github.com/pingc0y/URLFinder/util"
 	"io"
 	"net/http"
-	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Fuzz
@@ -54,31 +50,16 @@ func fuzzGet(u string) {
 			}
 		}
 	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	//配置代理
-	if cmd.X != "" {
-		proxyUrl, parseErr := url.Parse(config.Conf.Proxy)
-		if parseErr != nil {
-			fmt.Println("代理地址错误: \n" + parseErr.Error())
-			os.Exit(1)
-		}
-		tr.Proxy = http.ProxyURL(proxyUrl)
-	}
-	//加载yaml配置(proxy)
-	if cmd.I {
-		util.SetProxyConfig(tr)
-	}
-	client := &http.Client{Timeout: 10 * time.Second, Transport: tr}
 	request, err := http.NewRequest("GET", u, nil)
 	if err != nil {
 		return
 	}
+	if cmd.C != "" {
+		request.Header.Set("Cookie", cmd.C)
+	}
 	//增加header选项
-	request.Header.Add("Cookie", cmd.C)
-	request.Header.Add("User-Agent", util.GetUserAgent())
-	request.Header.Add("Accept", "*/*")
+	request.Header.Set("User-Agent", util.GetUserAgent())
+	request.Header.Set("Accept", "*/*")
 	//加载yaml配置
 	if cmd.I {
 		util.SetHeadersConfig(&request.Header)
@@ -103,12 +84,13 @@ func fuzzGet(u string) {
 		re := regexp.MustCompile("<Title>(.*?)</Title>")
 		title := re.FindAllStringSubmatch(body, -1)
 		config.Lock.Lock()
+		defer config.Lock.Unlock()
 		if len(title) != 0 {
 			result.Fuzzs = append(result.Fuzzs, mode.Link{Url: u, Status: strconv.Itoa(code), Size: strconv.Itoa(length), Title: title[0][1], Source: "Fuzz"})
 		} else {
 			result.Fuzzs = append(result.Fuzzs, mode.Link{Url: u, Status: strconv.Itoa(code), Size: strconv.Itoa(length), Title: "", Source: "Fuzz"})
 		}
-		config.Lock.Unlock()
+
 	}
 
 }
